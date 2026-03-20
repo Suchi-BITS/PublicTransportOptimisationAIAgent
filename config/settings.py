@@ -1,55 +1,42 @@
 # config/settings.py
-# Transit Optimization System Configuration
+# Public Transport Optimizer AI Agent v2 — Reactive Agent
 
-from pydantic import BaseModel, Field
-from typing import Optional
 import os
-from dotenv import load_dotenv
+from dataclasses import dataclass, field
+from typing import List
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
-class TransitConfig(BaseModel):
-    """Core configuration for the transit optimization system."""
+@dataclass
+class TransitConfig:
+    openai_api_key: str  = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    model_name:     str  = "gpt-4o"
+    temperature:    float = 0.05
 
-    # LLM settings
-    openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    model_name: str = "gpt-4o"
-    temperature: float = 0.1
-    max_tokens: int = 2048
+    network_name:   str  = "MetroLink Transit Authority"
+    city:           str  = "Metro City"
 
-    # Transit network identity
-    network_name: str = "MetroLink Transit Authority"
-    city: str = "Metro City"
-    timezone: str = "America/New_York"
+    routes: List[str] = field(default_factory=lambda: [
+        "R1-Red", "R2-Blue", "R3-Green", "R4-Yellow", "R5-Express",
+    ])
 
-    # Network topology
-    bus_routes: list[str] = ["B1", "B2", "B3", "B4", "B5", "B6"]
-    metro_lines: list[str] = ["M1", "M2", "M3"]
-    key_stations: list[str] = [
-        "Central Station", "Airport Terminal", "Stadium District",
-        "University Hub", "Downtown Core", "Riverside", "Tech Park", "Westgate Mall"
-    ]
+    # Reactive thresholds — agent fires an optimisation pass when any is breached
+    delay_threshold_minutes:     float = 5.0
+    occupancy_threshold_percent: float = 85.0
+    headway_deviation_pct:       float = 20.0
+    incident_response_minutes:   float = 3.0
 
-    # Fleet inventory
-    total_buses: int = 80
-    total_metro_trains: int = 24
-    bus_capacity: int = 60         # passengers per bus
-    metro_capacity: int = 300      # passengers per train
+    planning_horizon_minutes: int = 60
 
-    # Demand thresholds (load factor = passengers / capacity)
-    overcrowding_threshold: float = 0.90    # 90% full triggers intervention
-    underutilization_threshold: float = 0.30  # 30% full triggers reduction
-    surge_multiplier_threshold: float = 1.5   # 50% above baseline is a surge
-
-    # Scheduling parameters
-    min_headway_minutes: int = 3      # minimum gap between vehicles
-    max_headway_minutes: int = 30     # maximum acceptable gap
-    planning_horizon_hours: int = 6   # how far ahead to plan
-
-    # Performance targets
-    on_time_target_percent: float = 85.0
-    passenger_satisfaction_target: float = 4.0  # out of 5.0
+    disclaimer: str = (
+        "AI-generated transit optimisation recommendations. "
+        "Safety-critical decisions require human dispatcher approval."
+    )
 
 
 transit_config = TransitConfig()
