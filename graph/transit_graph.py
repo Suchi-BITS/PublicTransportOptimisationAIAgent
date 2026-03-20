@@ -1,151 +1,56 @@
 # graph/transit_graph.py
-# LangGraph StateGraph for the Transit Optimization Agent System
+# Reactive Agent LangGraph — single-node loop with conditional self-edge.
+#
+# Topology:
+#   START -> reactive_agent_node -> should_rerun? -> reactive_agent_node (loop)
+#                                                  -> END
+#
+# The reactive agent runs, checks if any high-severity triggers remain
+# unresolved, and optionally re-runs once more to refine actions.
+# In an MVP this is a single pass. The loop guard prevents infinite cycles.
 
+from typing import TypedDict, Any, Optional, List
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
-from data.models import AgentState
-from agents.demand_agent import run_demand_agent
-from agents.traffic_agent import run_traffic_agent
-from agents.event_agent import run_event_agent
-from agents.fleet_agent import run_fleet_agent
-from agents.schedule_optimizer import run_schedule_optimizer
-from agents.alert_agent import run_alert_agent
-from agents.supervisor_agent import run_supervisor_agent
+from agents.reactive_agent import run_reactive_agent
+
+MAX_REACTIVE_PASSES = 2
 
 
-def build_transit_graph() -> StateGraph:
-    """
-    Build and compile the LangGraph StateGraph for transit optimization.
+class TransitState(TypedDict, total=False):
+    pass_count:           int
+    vehicles:             Any
+    incidents:            Any
+    demand:               Any
+    traffic:              Any
+    triggers:             Any
+    actions:              Any
+    network_status:       Optional[str]
+    optimisation_report:  Optional[str]
 
-    Graph topology:
-    
-    supervisor (init)
-         |
-         v
-    demand_agent --> traffic_agent --> event_agent --> fleet_agent
-                                                           |
-                                                           v
-                                                   schedule_optimizer
-                                                           |
-                                                           v
-                                                      alert_agent
-                                                           |
-                                                           v
-                                                   supervisor (synthesis)
-                                                           |
-                                                           v
-                                                         END
 
-    The four monitoring agents (demand, traffic, event, fleet) run sequentially,
-    each enriching the shared state with their analyses.
-    The optimizer then uses all four analyses to make scheduling decisions.
-    The alert agent publishes passenger communications.
-    The supervisor synthesizes and produces the final report.
-    """
-    workflow = StateGraph(dict)
+def reactive_node(state: TransitState) -> TransitState:
+    state["pass_count"] = state.get("pass_count", 0) + 1
+    return run_reactive_agent(state)
 
-    # Wrap Pydantic-based agent functions for LangGraph dict-based state
-    def supervisor_node(state: dict) -> dict:
-        result = run_supervisor_agent(AgentState(**state))
-        return result.model_dump()
 
-    def demand_node(state: dict) -> dict:
-        result = run_demand_agent(AgentState(**state))
-        return result.model_dump()
+def should_rerun(state: TransitState) -> str:
+    # Only rerun if high-severity unresolved triggers remain and under pass limit
+    if state.get("pass_count", 0) >= MAX_REACTIVE_PASSES:
+        return "end"
+    triggers = state.get("triggers", [])
+    if any(t["severity"] == "high" for t in triggers):
+        return "rerun"
+    return "end"
 
-    def traffic_node(state: dict) -> dict:
-        result = run_traffic_agent(AgentState(**state))
-        return result.model_dump()
 
-    def event_node(state: dict) -> dict:
-        result = run_event_agent(AgentState(**state))
-        return result.model_dump()
-
-    def fleet_node(state: dict) -> dict:
-        result = run_fleet_agent(AgentState(**state))
-        return result.model_dump()
-
-    def optimizer_node(state: dict) -> dict:
-        result = run_schedule_optimizer(AgentState(**state))
-        return result.model_dump()
-
-    def alert_node(state: dict) -> dict:
-        result = run_alert_agent(AgentState(**state))
-        return result.model_dump()
-
-    # Register all nodes
-    workflow.add_node("supervisor", supervisor_node)
-    workflow.add_node("demand_agent", demand_node)
-    workflow.add_node("traffic_agent", traffic_node)
-    workflow.add_node("event_agent", event_node)
-    workflow.add_node("fleet_agent", fleet_node)
-    workflow.add_node("schedule_optimizer", optimizer_node)
-    workflow.add_node("alert_agent", alert_node)
-
-    # Entry point
-    workflow.set_entry_point("supervisor")
-
-    # Supervisor routes to first monitoring agent or END
-    workflow.add_conditional_edges(
-        "supervisor",
-        lambda state: state["current_agent"],
-        {
-            "demand_agent": "demand_agent",
-            "complete": END
-        }
+def build_transit_graph():
+    g = StateGraph(TransitState)
+    g.add_node("reactive_agent", reactive_node)
+    g.set_entry_point("reactive_agent")
+    g.add_conditional_edges(
+        "reactive_agent",
+        should_rerun,
+        {"rerun": "reactive_agent", "end": END},
     )
-
-    # Sequential monitoring pipeline
-    workflow.add_edge("demand_agent", "traffic_agent")
-    workflow.add_edge("traffic_agent", "event_agent")
-    workflow.add_edge("event_agent", "fleet_agent")
-
-    # Fleet analysis feeds the optimizer
-    workflow.add_edge("fleet_agent", "schedule_optimizer")
-
-    # Optimizer feeds alert generation
-    workflow.add_edge("schedule_optimizer", "alert_agent")
-
-    # Alerts done, back to supervisor for final synthesis
-    workflow.add_edge("alert_agent", "supervisor")
-
-    # Compile with memory checkpointing for persistence
-    memory = MemorySaver()
-    compiled = workflow.compile(checkpointer=memory)
-
-    return compiled
-
-
-def get_graph_description() -> str:
-    """Return a text description of the graph topology."""
-    return """
-    TRANSIT OPTIMIZATION AI AGENT GRAPH
-    =====================================
-
-    ENTRY
-      |
-      v
-    [SUPERVISOR] -------> [DEMAND AGENT]
-       ^                        |
-       |                        v
-       |                  [TRAFFIC AGENT]
-       |                        |
-       |                        v
-    [ALERT AGENT]         [EVENT AGENT]
-       ^                        |
-       |                        v
-    [SCHEDULE OPTIMIZER] <-- [FLEET AGENT]
-
-    Final: SUPERVISOR (synthesis) --> END
-
-    Agents and their data feeds:
-    -------------------------------------------------------
-    Supervisor           Orchestrates flow, synthesizes final report
-    Demand Agent         AFC systems, APC counters, load factor analysis
-    Traffic Agent        Traffic management APIs, incident feeds, AVL data
-    Event Agent          Events calendar, venue feeds, demand forecasting
-    Fleet Agent          AVL/GPS positions, CAD system, OBD diagnostics
-    Schedule Optimizer   LangChain tool-calling -> frequency/fleet adjustments
-    Alert Agent          LangChain tool-calling -> multi-channel passenger alerts
-    """
+    return g.compile()
